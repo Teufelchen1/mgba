@@ -13,6 +13,7 @@
 #include <mgba/debugger/debugger.h>
 #ifdef M_CORE_GBA
 #include <mgba/internal/gba/gba.h>
+#include <mgba/internal/gba/sio/unix.h>
 #endif
 #ifdef M_CORE_GB
 #include <mgba/internal/sm83/sm83.h>
@@ -149,6 +150,8 @@ int main(int argc, char * argv[]) {
 			_armSwi32 = ((struct GBA*) core->board)->cpu->irqh.swi32;
 			((struct GBA*) core->board)->cpu->irqh.swi32 = _headlessSwi32;
 		}
+		GBASIOUnixCreate(&m_unixsocket);
+		core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &m_unixsocket.siodriver);
 		break;
 #endif
 #ifdef M_CORE_GB

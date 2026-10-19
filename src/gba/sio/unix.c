@@ -5,13 +5,20 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <unistd.h>
+#include <signal.h>
 
 #include <mgba/internal/gba/sio/unix.h>
 
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
 
+#define BITS_PER_SECOND 115200 // This is wrong, but we need to maintain compat for the time being
+#define CYCLES_PER_BIT (GBA_ARM7TDMI_FREQUENCY / BITS_PER_SECOND)
+#define CLOCK_GRAIN (CYCLES_PER_BIT * 8)
+
 static bool GBASIOUnixInit(struct GBASIODriver* driver);
+static void GBASIOUnixDeinit(struct GBASIODriver* driver);
 static void GBASIOUnixReset(struct GBASIODriver* driver);
 static void GBASIOUnixSetMode(struct GBASIODriver* driver, enum GBASIOMode mode);
 static bool GBASIOUnixHandlesMode(struct GBASIODriver* driver, enum GBASIOMode mode);
@@ -23,16 +30,19 @@ static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint3
 void GBASIOUnixCreate(struct GBASIOUnix* unix) {
 	memset(&unix->siodriver, 0, sizeof(unix->siodriver));
 	unix->siodriver.init = GBASIOUnixInit;
+	unix->siodriver.deinit = GBASIOUnixDeinit;
 	unix->siodriver.reset = GBASIOUnixReset;
 	unix->siodriver.setMode = GBASIOUnixSetMode;
 	unix->siodriver.handlesMode = GBASIOUnixHandlesMode;
-	//unix->siodriver.connectedDevices = GBASIOUnixConnectedDevices;
+	unix->siodriver.connectedDevices = GBASIOUnixConnectedDevices;
 	unix->siodriver.writeSIOCNT = GBASIOUnixWriteSIOCNT;
 	unix->siodriver.writeSIODATA8 = GABSIOUnixWriteSIODATA8;
 	unix->event.context = unix;
-	unix->event.name = "GB SIO Lockstep";
+	unix->event.name = "GBASIOUnix Wakeup";
 	unix->event.callback = GBASIOUnixProcessEvents;
 	unix->event.priority = 0x80;
+	unix->socket = 0;
+	unix->peer_socket = 0;
 
 	puts("UnixCreate");
 }
@@ -58,43 +68,47 @@ static const char* _modeName(enum GBASIOMode mode) {
 
 static bool GBASIOUnixInit(struct GBASIODriver* driver) {
 	puts("UnixInit");
+	signal(SIGPIPE, SIG_IGN); // Stupid
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
+
+	socklen_t peer_addr_size;
+	struct sockaddr_un my_addr;
+	unix->socket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+
+	if (unix->socket == -1)
+		return false;
+
+	memset(&my_addr, 0, sizeof(my_addr));
+
+	my_addr.sun_family = AF_UNIX;
+
+	strncpy((char *) my_addr.sun_path, "gba_uart", sizeof(my_addr.sun_path) - 1);
+	if (bind(unix->socket, (struct sockaddr *) &my_addr, sizeof(my_addr)) == -1)
+		return false;
+	if (listen(unix->socket, 1) == -1)
+		return false;
+
 	GBASIOUnixReset(driver);
-
-	int fd, cfd;
-    socklen_t peer_addr_size;
-    struct sockaddr_un my_addr;
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd == -1) 
-    	return false;
-
-    memset(&my_addr, 0, sizeof(my_addr));
-
-    my_addr.sun_family = AF_UNIX;
-
-    strncpy((char *) my_addr.sun_path, "gba_uart", sizeof(my_addr.sun_path) - 1);
-    if (bind(fd, (struct sockaddr *) &my_addr, sizeof(my_addr)) == -1)
-        return false;
-    // if (listen(fd, LISTEN_BACKLOG) == -1)
-    //     err(EXIT_FAILURE, "listen");
-    // /* Now we can accept incoming connections one
-    //    at a time using accept(2).  */
-    // peer_addr_size = sizeof(peer_addr);
-    // cfd = accept(sfd, (struct sockaddr *) &peer_addr,
-    //              &peer_addr_size);
-    // if (cfd == -1)
-    //     err(EXIT_FAILURE, "accept");
-    // /* Code to deal with incoming connection(s)...  */
-    // if (close(sfd) == -1)
-    //     err(EXIT_FAILURE, "close");
-    // if (unlink(MY_SOCK_PATH) == -1)
-    //     err(EXIT_FAILURE, "unlink");
+	sleep(5);
 	return true;
+}
+
+static void GBASIOUnixDeinit(struct GBASIODriver* driver) {
+	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
+	puts("GBASIOUnixDeinit");
+	if (unix->peer_socket)
+		close(unix->peer_socket);
+	if (unix->socket)
+		close(unix->socket);
+	unlink("gba_uart");
 }
 
 static void GBASIOUnixReset(struct GBASIODriver* driver) {
 	puts("UnixReset");
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
+	if (unix->peer_socket)
+		close(unix->peer_socket);
+	unix->peer_socket = 0;
 	mTimingDeschedule(&unix->siodriver.p->p->timing, &unix->event);
 	mTimingSchedule(&unix->siodriver.p->p->timing, &unix->event, 0);
 }
@@ -102,11 +116,13 @@ static void GBASIOUnixReset(struct GBASIODriver* driver) {
 static void GBASIOUnixSetMode(struct GBASIODriver* driver, enum GBASIOMode mode) {
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
 	(void) unix;
-	printf("I am in SIOUnix driver! SetMode to: %s\n", _modeName(mode));
+	printf("GBASIOUnixSetMode! SetMode to: %s\n", _modeName(mode));
 }
 
 static bool GBASIOUnixHandlesMode(struct GBASIODriver* driver, enum GBASIOMode mode) {
 	UNUSED(driver);
+	if (mode == GBA_SIO_UART)
+		puts("GBASIOUnixHandlesMode: yes I handle this mode");
 	return mode == GBA_SIO_UART;
 }
 
@@ -134,7 +150,15 @@ static uint16_t GBASIOUnixWriteSIOCNT(struct GBASIODriver* driver, uint16_t valu
 }
 
 static uint8_t GABSIOUnixWriteSIODATA8(struct GBASIODriver* driver, uint8_t value) {
+	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
 	printf("GABSIOUnixWriteSIODATA8: Write %u\n", value);
+	if (unix->peer_socket) {
+		int ret = write(unix->peer_socket, &value, 1);
+		if (ret != 1) {
+			puts("Write failed");
+			GBASIOUnixReset(driver);
+		}
+	}
 	return value;
 }
 
@@ -142,5 +166,11 @@ static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint3
 	(void) timing;
 	struct GBASIOUnix * unix = (struct GBASIOUnix *) context;
 	printf("GBASIOUnixProcessEvents: %u cyclesLate\n", cyclesLate);
-	mTimingSchedule(timing, &unix->event, 16000000 * 10);
+	int ret = accept4(unix->socket, NULL, NULL, SOCK_NONBLOCK);
+	if (ret > 0) {
+		puts("GBASIOUnixProcessEvents: Accepted peer");
+		unix->peer_socket = ret;
+		return;
+	}
+	mTimingSchedule(timing, &unix->event, CLOCK_GRAIN);
 }

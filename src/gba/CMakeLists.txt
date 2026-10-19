@@ -36,6 +36,7 @@ set(SOURCE_FILES
 	video.c)
 
 set(SIO_FILES
+	sio/unix.c
 	sio/dolphin.c
 	sio/lockstep.c)
 

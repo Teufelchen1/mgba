@@ -32,6 +32,8 @@ static const char* _modeName(enum GBASIOMode mode) {
 		return "JOYBUS";
 	case GBA_SIO_GPIO:
 		return "GPIO";
+	case GBA_SIO_UART:
+		return "UART";
 	default:
 		return "(unknown)";
 	}
@@ -218,6 +220,7 @@ void GBASIOWriteSIOCNT(struct GBASIO* sio, uint16_t value) {
 		// TODO
 		break;
 	}
+
 	if (handled) {
 		value = sio->driver->writeSIOCNT(sio->driver, value);
 	} else {
@@ -326,6 +329,9 @@ uint16_t GBASIOWriteRegister(struct GBASIO* sio, uint32_t address, uint16_t valu
 		switch (address) {
 		case GBA_REG_SIODATA8:
 			mLOG(GBA_SIO, DEBUG, "UART write: SIODATA8 <- %04X", value);
+			if (sio->driver && sio->driver->writeSIODATA8) {
+				value = sio->driver->writeSIODATA8(sio->driver, value);
+			}
 			break;
 		case GBA_REG_JOYCNT:
 			mLOG(GBA_SIO, DEBUG, "UART write: JOYCNT (?) <- %04X", value);

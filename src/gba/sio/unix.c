@@ -71,9 +71,12 @@ static bool GBASIOUnixInit(struct GBASIODriver* driver) {
 	signal(SIGPIPE, SIG_IGN); // Stupid
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
 
-	socklen_t peer_addr_size;
 	struct sockaddr_un my_addr;
-	unix->socket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	unix->socket = socket(AF_UNIX, SOCK_STREAM, 0);
+
+	if (fcntl(unix->socket, F_SETFL, fcntl(unix->socket, F_GETFL, 0) | O_NONBLOCK) == -1){
+		return false;
+	}
 
 	if (unix->socket == -1)
 		return false;
@@ -151,7 +154,7 @@ static uint16_t GBASIOUnixWriteSIOCNT(struct GBASIODriver* driver, uint16_t valu
 
 static uint8_t GABSIOUnixWriteSIODATA8(struct GBASIODriver* driver, uint8_t value) {
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
-	printf("GABSIOUnixWriteSIODATA8: Write %u\n", value);
+	//printf("GABSIOUnixWriteSIODATA8: Write %u\n", value);
 	if (unix->peer_socket) {
 		int ret = write(unix->peer_socket, &value, 1);
 		if (ret != 1) {
@@ -165,12 +168,22 @@ static uint8_t GABSIOUnixWriteSIODATA8(struct GBASIODriver* driver, uint8_t valu
 static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint32_t cyclesLate) {
 	(void) timing;
 	struct GBASIOUnix * unix = (struct GBASIOUnix *) context;
-	printf("GBASIOUnixProcessEvents: %u cyclesLate\n", cyclesLate);
-	int ret = accept4(unix->socket, NULL, NULL, SOCK_NONBLOCK);
-	if (ret > 0) {
-		puts("GBASIOUnixProcessEvents: Accepted peer");
-		unix->peer_socket = ret;
-		return;
+	//printf("GBASIOUnixProcessEvents: %u cyclesLate\n", cyclesLate);
+	if (unix->peer_socket) {
+		uint8_t buf[1];
+		if (read(unix->peer_socket, buf, sizeof(buf)) == 1) {
+			puts("GBASIOUnixProcessEvents: Read data from peer");
+			unix->siodriver.p->p->memory.io[GBA_REG(SIODATA8)] = buf[0];
+			GBARaiseIRQ(unix->siodriver.p->p, GBA_IRQ_SIO, cyclesLate);
+		}
+	} else {
+		int fd = accept(unix->socket, NULL, NULL);
+		if (fd > 0) {
+			if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != -1) {
+				puts("GBASIOUnixProcessEvents: Accepted peer");
+				unix->peer_socket = fd;
+			}
+		}
 	}
 	mTimingSchedule(timing, &unix->event, CLOCK_GRAIN);
 }

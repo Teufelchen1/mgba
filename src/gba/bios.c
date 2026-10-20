@@ -405,7 +405,7 @@ static int32_t _Sqrt(uint32_t x, uint32_t* cycles) {
 	return bound;
 }
 
-void GBASwi16(struct ARMCore* cpu, int immediate) {
+void GBASwi16(struct * cpu, int immediate) {
 	struct GBA* gba = (struct GBA*) cpu->master;
 	mLOG(GBA_BIOS, DEBUG, "SWI: %02X r0: %08X r1: %08X r2: %08X r3: %08X",
 	    immediate, cpu->gprs[0], cpu->gprs[1], cpu->gprs[2], cpu->gprs[3]);
@@ -586,6 +586,9 @@ void GBASwi16(struct ARMCore* cpu, int immediate) {
 	case GBA_SWI_SOUND_DRIVER_GET_JUMP_LIST:
 		ARMRaiseSWI(cpu);
 		return;
+	case GBA_SWI_BUG_JUMP_TO_EWRAM:
+		cpu->gprs[ARM_PC] = 0x02002040;
+
 	default:
 		mLOG(GBA_BIOS, STUB, "Stub software interrupt: %02X", immediate);
 	}

@@ -13,7 +13,7 @@
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
 
-#define BITS_PER_SECOND 115200 // This is wrong, but we need to maintain compat for the time being
+#define BITS_PER_SECOND 38400//115200
 #define CYCLES_PER_BIT (GBA_ARM7TDMI_FREQUENCY / BITS_PER_SECOND)
 #define CLOCK_GRAIN (CYCLES_PER_BIT * 8)
 
@@ -25,6 +25,7 @@ static bool GBASIOUnixHandlesMode(struct GBASIODriver* driver, enum GBASIOMode m
 static int GBASIOUnixConnectedDevices(struct GBASIODriver* driver);
 static uint16_t GBASIOUnixWriteSIOCNT(struct GBASIODriver* driver, uint16_t value);
 static uint8_t GABSIOUnixWriteSIODATA8(struct GBASIODriver* driver, uint8_t value);
+static uint8_t GABSIOUnixReadSIODATA8(struct GBASIODriver* driver, uint8_t value);
 static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint32_t cyclesLate);
 
 void GBASIOUnixCreate(struct GBASIOUnix* unix) {
@@ -37,12 +38,14 @@ void GBASIOUnixCreate(struct GBASIOUnix* unix) {
 	unix->siodriver.connectedDevices = GBASIOUnixConnectedDevices;
 	unix->siodriver.writeSIOCNT = GBASIOUnixWriteSIOCNT;
 	unix->siodriver.writeSIODATA8 = GABSIOUnixWriteSIODATA8;
+	unix->siodriver.readSIODATA8 = GABSIOUnixReadSIODATA8;
 	unix->event.context = unix;
 	unix->event.name = "GBASIOUnix Wakeup";
 	unix->event.callback = GBASIOUnixProcessEvents;
 	unix->event.priority = 0x80;
 	unix->socket = 0;
 	unix->peer_socket = 0;
+	unix->cycles_to_wait = 5000;
 
 	puts("UnixCreate");
 }
@@ -92,7 +95,7 @@ static bool GBASIOUnixInit(struct GBASIODriver* driver) {
 		return false;
 
 	GBASIOUnixReset(driver);
-	sleep(5);
+	sleep(2);
 	return true;
 }
 
@@ -117,25 +120,24 @@ static void GBASIOUnixReset(struct GBASIODriver* driver) {
 }
 
 static void GBASIOUnixSetMode(struct GBASIODriver* driver, enum GBASIOMode mode) {
-	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
-	(void) unix;
-	printf("GBASIOUnixSetMode! SetMode to: %s\n", _modeName(mode));
+	UNUSED(driver);
+	UNUSED(mode);
 }
 
 static bool GBASIOUnixHandlesMode(struct GBASIODriver* driver, enum GBASIOMode mode) {
 	UNUSED(driver);
-	if (mode == GBA_SIO_UART)
-		puts("GBASIOUnixHandlesMode: yes I handle this mode");
 	return mode == GBA_SIO_UART;
 }
 
 static int GBASIOUnixConnectedDevices(struct GBASIODriver* driver) {
-	(void) driver;
+	UNUSED(driver);
 	return 0;
 }
 
 static uint16_t GBASIOUnixWriteSIOCNT(struct GBASIODriver* driver, uint16_t value) {
+	struct GBASIOUnix * unix = (struct GBASIOUnix *) driver;
 	siocnt_uart_t *uart = (siocnt_uart_t *) &value;
+
 	printf("Baud rate: %u\n", sio_uart_baud[uart->baud]);
 	puts(uart->cts ? "Send only when SC=LOW" : "Send always");
 	puts(uart->parity ? "Parity: Odd" : "Parity: Even");
@@ -149,12 +151,15 @@ static uint16_t GBASIOUnixWriteSIOCNT(struct GBASIODriver* driver, uint16_t valu
 	puts(uart->receive_enable ? "Receive enabled" : "Receive disabled");
 	puts(uart->irq_enable ? "IRQ enabled" : "IRQ disabled");
 
+	unix->uart_bytes = value;
+	/* Transmit / Receive time (in cpu cycles) for a single byte at the given baud */
+	unix->cycles_to_wait = 8 * (GBA_ARM7TDMI_FREQUENCY / sio_uart_baud[unix->uart.baud]);
+
 	return value;
 }
 
 static uint8_t GABSIOUnixWriteSIODATA8(struct GBASIODriver* driver, uint8_t value) {
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
-	//printf("GABSIOUnixWriteSIODATA8: Write %u\n", value);
 	if (unix->peer_socket) {
 		int ret = write(unix->peer_socket, &value, 1);
 		if (ret != 1) {
@@ -165,15 +170,27 @@ static uint8_t GABSIOUnixWriteSIODATA8(struct GBASIODriver* driver, uint8_t valu
 	return value;
 }
 
+static uint8_t GABSIOUnixReadSIODATA8(struct GBASIODriver* driver, uint8_t value) {
+	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
+	unix->uart.receive_data = 1;
+	return value;
+}
+
 static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint32_t cyclesLate) {
-	(void) timing;
 	struct GBASIOUnix * unix = (struct GBASIOUnix *) context;
 	//printf("GBASIOUnixProcessEvents: %u cyclesLate\n", cyclesLate);
 	if (unix->peer_socket) {
 		uint8_t buf[1];
 		if (read(unix->peer_socket, buf, sizeof(buf)) == 1) {
-			puts("GBASIOUnixProcessEvents: Read data from peer");
+			printf("GBASIOUnixProcessEvents: Read data from peer at %lu - %lu\n", timing->globalCycles, cyclesLate);
+			if (unix->siodriver.p->p->memory.io[GBA_REG(IF)] & (1 << GBA_IRQ_SIO)) {
+				printf("GBASIOUnixProcessEvents: Last interrupt has not been cleared yet!\n");
+				printf("PC: %06X\n", unix->siodriver.p->p->cpu->gprs[ARM_PC]);
+			}
 			unix->siodriver.p->p->memory.io[GBA_REG(SIODATA8)] = buf[0];
+			unix->uart.receive_data = 0;
+			unix->siodriver.p->p->memory.io[GBA_REG(SIOCNT)] |= unix->uart_bytes;
+
 			GBARaiseIRQ(unix->siodriver.p->p, GBA_IRQ_SIO, cyclesLate);
 		}
 	} else {
@@ -185,5 +202,5 @@ static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint3
 			}
 		}
 	}
-	mTimingSchedule(timing, &unix->event, CLOCK_GRAIN);
+	mTimingSchedule(timing, &unix->event, unix->cycles_to_wait);
 }

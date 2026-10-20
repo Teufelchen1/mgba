@@ -55,8 +55,13 @@ unsigned int sio_uart_baud[4] = { 9600, 38400, 57600, 115200 };
 struct GBASIOUnix {
 	struct GBASIODriver siodriver;
 	struct mTimingEvent event;
+    union {
+        siocnt_uart_t uart;
+        uint16_t uart_bytes;
+    };
     int socket;
     int peer_socket;
+    unsigned int cycles_to_wait;
 };
 
 struct GBASIOUnix m_unixsocket;

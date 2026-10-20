@@ -563,7 +563,7 @@ void GBAIOWrite(struct GBA* gba, uint32_t address, uint16_t value) {
 			STORE_16LE(value, address - GBA_REG_DEBUG_STRING, gba->debugString);
 			return;
 		}
-		mLOG(GBA_IO, STUB, "Stub I/O register write: %03X", address);
+		mLOG(GBA_IO, STUB, "Stub I/O register write: %06X (PC=%06X)", address, gba->cpu->gprs[ARM_PC]);
 		if (address >= GBA_REG_MAX) {
 			mLOG(GBA_IO, GAME_ERROR, "Write to unused I/O register: %03X", address);
 			return;
@@ -951,11 +951,13 @@ uint16_t GBAIORead(struct GBA* gba, uint32_t address) {
 	case GBA_REG_TM2CNT_HI:
 	case GBA_REG_TM3CNT_HI:
 	case GBA_REG_KEYCNT:
+		break;
 	case GBA_REG_SIOMULTI0:
 	case GBA_REG_SIOMULTI1:
 	case GBA_REG_SIOMULTI2:
 	case GBA_REG_SIOMULTI3:
 	case GBA_REG_SIOMLT_SEND:
+		return GBASIOReadRegister(&gba->sio, address, gba->memory.io[address >> 1]);
 	case GBA_REG_JOYCNT:
 	case GBA_REG_JOY_TRANS_LO:
 	case GBA_REG_JOY_TRANS_HI:

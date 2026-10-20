@@ -563,7 +563,7 @@ void GBAIOWrite(struct GBA* gba, uint32_t address, uint16_t value) {
 			STORE_16LE(value, address - GBA_REG_DEBUG_STRING, gba->debugString);
 			return;
 		}
-		mLOG(GBA_IO, STUB, "Stub I/O register write: %03X", address);
+		mLOG(GBA_IO, STUB, "Stub I/O register write: %06X (PC=%06X)", address, gba->cpu->gprs[ARM_PC]);
 		if (address >= GBA_REG_MAX) {
 			mLOG(GBA_IO, GAME_ERROR, "Write to unused I/O register: %03X", address);
 			return;

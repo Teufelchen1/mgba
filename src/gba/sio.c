@@ -344,7 +344,11 @@ uint16_t GBASIOReadRegister(struct GBASIO* sio, uint32_t address, uint16_t value
 	case GBA_SIO_UART:
 		switch (address) {
 		case GBA_REG_SIODATA8:
-			mLOG(GBA_SIO, DEBUG, "UART read: SIODATA8 -> %04X", value);
+			if (sio->driver && sio->driver->readSIODATA8) {
+				value = sio->driver->readSIODATA8(sio->driver, value);
+			} else {
+				mLOG(GBA_SIO, DEBUG, "UART read: SIODATA8 -> %04X", value);
+			}
 			break;
 		default:
 			mLOG(GBA_SIO, GAME_ERROR, "UART read: Unhandled %s -> %04X", GBAIORegisterNames[address >> 1], value);
@@ -446,9 +450,10 @@ uint16_t GBASIOWriteRegister(struct GBASIO* sio, uint32_t address, uint16_t valu
 	case GBA_SIO_UART:
 		switch (address) {
 		case GBA_REG_SIODATA8:
-			mLOG(GBA_SIO, DEBUG, "UART write: SIODATA8 <- %04X", value);
 			if (sio->driver && sio->driver->writeSIODATA8) {
 				value = sio->driver->writeSIODATA8(sio->driver, value);
+			} else {
+				mLOG(GBA_SIO, DEBUG, "UART write: SIODATA8 <- %04X", value);
 			}
 			break;
 		case GBA_REG_JOYCNT:

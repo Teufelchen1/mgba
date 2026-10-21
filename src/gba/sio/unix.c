@@ -46,6 +46,10 @@ void GBASIOUnixCreate(struct GBASIOUnix* unix) {
 	unix->socket = 0;
 	unix->peer_socket = 0;
 	unix->cycles_to_wait = 5000;
+	unix->receive_fifo = 0;
+	unix->send_fifo = 0;
+	unix->receive_fifo_offset = 0;
+	unix->send_fifo_offset = 0;
 
 	puts("UnixCreate");
 }
@@ -158,21 +162,56 @@ static uint16_t GBASIOUnixWriteSIOCNT(struct GBASIODriver* driver, uint16_t valu
 	return value;
 }
 
+static char _convert(uint32_t in, uint8_t offset) {
+	char value = (char) ((in >> (8 * offset)) & 0xff);
+	if (value <= 0x20) {
+		value = '_';
+	}
+	if (value >= 0x7F) {
+		value = '?';
+	}
+	return value;
+}
+
 static uint8_t GABSIOUnixWriteSIODATA8(struct GBASIODriver* driver, uint8_t value) {
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
-	if (unix->peer_socket) {
-		int ret = write(unix->peer_socket, &value, 1);
-		if (ret != 1) {
-			puts("Write failed");
-			GBASIOUnixReset(driver);
+
+	if (unix->uart.fifo_enable) {
+		/* Todo: How does hardware behave when the fifo is full?
+		 * Overwriting the last byte?
+		 * Dropping the new write attempt?
+		 * Cycling back to the front of the "queue"? */
+		printf("write: send_fifo: [%c|%c|%c|%c][%u], value: %c\n",
+			_convert(unix->send_fifo, 3),
+			_convert(unix->send_fifo, 2),
+			_convert(unix->send_fifo, 1),
+			_convert(unix->send_fifo, 0),
+			unix->send_fifo_offset, value);
+		if (unix->send_fifo_offset < 4) {
+			unix->send_fifo |= (uint32_t) value << (unix->send_fifo_offset * 8);
+			unix->send_fifo_offset++;
 		}
+		if (unix->send_fifo_offset >= 4) {
+			puts("Fifo full!");
+			unix->uart.send_data = 1;
+			unix->siodriver.p->p->sio.siocnt = unix->uart_bytes;
+		}
+	} else {
+		unix->send_fifo = value;
+		/* Mark that we got data, so GBASIOUnixProcessEvents knows it should send something */
+		unix->send_fifo_offset = 1;
+		unix->uart.send_data = 1;
+		unix->siodriver.p->p->sio.siocnt = unix->uart_bytes;
 	}
+
 	return value;
 }
 
 static uint8_t GABSIOUnixReadSIODATA8(struct GBASIODriver* driver, uint8_t value) {
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
+	printf("GABSIOUnixReadSIODATA8: Read data\n");
 	unix->uart.receive_data = 1;
+	unix->siodriver.p->p->sio.siocnt = unix->uart_bytes;
 	return value;
 }
 
@@ -183,17 +222,54 @@ static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint3
 		uint8_t buf[1];
 		if (read(unix->peer_socket, buf, sizeof(buf)) == 1) {
 			printf("GBASIOUnixProcessEvents: Read data from peer at %lu - %lu\n", timing->globalCycles, cyclesLate);
-			if (unix->siodriver.p->p->memory.io[GBA_REG(IF)] & (1 << GBA_IRQ_SIO)) {
-				printf("GBASIOUnixProcessEvents: Last interrupt has not been cleared yet!\n");
-				printf("PC: %06X\n", unix->siodriver.p->p->cpu->gprs[ARM_PC]);
-			}
-			unix->siodriver.p->p->memory.io[GBA_REG(SIODATA8)] = buf[0];
-			unix->uart.receive_data = 0;
-			unix->siodriver.p->p->memory.io[GBA_REG(SIOCNT)] |= unix->uart_bytes;
+			if (unix->uart.receive_enable) {
+				if (unix->uart.fifo_enable) {
 
-			GBARaiseIRQ(unix->siodriver.p->p, GBA_IRQ_SIO, cyclesLate);
+				} else {
+
+				}
+				if (unix->siodriver.p->p->memory.io[GBA_REG(IF)] & (1 << GBA_IRQ_SIO)) {
+					printf("GBASIOUnixProcessEvents: Last interrupt has not been cleared yet!\n");
+					//printf("PC: %06X\n", unix->siodriver.p->p->cpu->gprs[ARM_PC]);
+				}
+				unix->siodriver.p->p->memory.io[GBA_REG(SIODATA8)] = buf[0];
+				unix->uart.receive_data = 0;
+				unix->siodriver.p->p->sio.siocnt = unix->uart_bytes;
+
+				GBARaiseIRQ(unix->siodriver.p->p, GBA_IRQ_SIO, cyclesLate);
+			} else {
+				printf("GBASIOUnixProcessEvents: Received data but receiving is disabled\n");
+			}
+		}
+	}
+
+	if (unix->uart.send_enable) {
+		if (unix->send_fifo_offset > 0) {
+			uint8_t value = unix->send_fifo & 0xff;
+			printf("send : send_fifo: [%c|%c|%c|%c][%u], value: %c\n",
+			_convert(unix->send_fifo, 3),
+			_convert(unix->send_fifo, 2),
+			_convert(unix->send_fifo, 1),
+			_convert(unix->send_fifo, 0),
+			unix->send_fifo_offset, value);
+			unix->send_fifo >>= 8;
+			unix->send_fifo_offset--;
+
+			unix->uart.send_data = 0;
+			unix->siodriver.p->p->sio.siocnt = unix->uart_bytes;
+
+			if (unix->peer_socket && write(unix->peer_socket, &value, 1) != 1) {
+				puts("GBASIOUnixProcessEvents: Write failed");
+				GBASIOUnixReset((struct GBASIODriver *) context);
+			}
 		}
 	} else {
+		if (unix->send_fifo_offset > 0) {
+			puts("GBASIOUnixProcessEvents: Got data but sending is disabled");
+		}
+	}
+
+	if (!unix->peer_socket) {
 		int fd = accept(unix->socket, NULL, NULL);
 		if (fd > 0) {
 			if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != -1) {

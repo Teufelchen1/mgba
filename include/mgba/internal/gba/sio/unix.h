@@ -62,6 +62,10 @@ struct GBASIOUnix {
     int socket;
     int peer_socket;
     unsigned int cycles_to_wait;
+    uint32_t receive_fifo;
+    unsigned int receive_fifo_offset;
+    uint32_t send_fifo;
+    unsigned int send_fifo_offset;
 };
 
 struct GBASIOUnix m_unixsocket;

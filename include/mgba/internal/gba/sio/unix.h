@@ -37,8 +37,8 @@ typedef struct {
     uint16_t baud : 2;
     uint16_t cts : 1;
     uint16_t parity : 1;
-    uint16_t send_data : 1;
-    uint16_t receive_data : 1;
+    uint16_t send_fifo_full : 1;
+    uint16_t receive_fifo_empty : 1;
     uint16_t error : 1;
     uint16_t data_bits : 1;
     uint16_t fifo_enable : 1;

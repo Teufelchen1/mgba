@@ -587,7 +587,37 @@ void GBASwi16(struct ARMCore* cpu, int immediate) {
 		ARMRaiseSWI(cpu);
 		return;
 	case GBA_SWI_BUG_JUMP_TO_EWRAM:
+		/* Simulate the GBA BIOS SWI entry */
 		ARMRaiseSWI(cpu);
+
+		/* Save the regs that the BIOS uses */
+		ARMRunFake(cpu, 0xE92D5800); /* push {r11, r12, lr} */
+		ARMRun(cpu);
+
+		/* Save the SPSR to stack */
+		cpu->gprs[11] = cpu->spsr.packed;
+		ARMRunFake(cpu, 0xE92D0800); /* push {r11} */
+		ARMRun(cpu);
+
+		/* Switch from SVC to SYSTEM mode, keeping the IRQ dis/enabled as befor */
+		cpu->gprs[11] &= 0x80; /* keep IRQ flag */
+		cpu->gprs[11] |= MODE_SYSTEM;
+		cpu->cpsr.packed = cpu->gprs[11];
+		ARMSetPrivilegeMode(cpu, MODE_SYSTEM);
+
+		/* Save SYSTEM mode `lr` to stack (and r2 for some reason) */
+		ARMRunFake(cpu, 0xE92D4004); /* push {r2, lr} */
+		ARMRun(cpu);
+
+		/* Set LR to hle-bios.s:54 / swi_complete */
+		cpu->gprs[ARM_LR] = 0xA4;
+
+		/* The address in EWRAM this will jump to */
+		cpu->gprs[12] = 0x02002040;
+
+		/* Jump to it, using bx as the BIOS, but will always be ARM */
+		ARMRunFake(cpu, 0x112FFF1C); /* bx r12 */
+		ARMRun(cpu);
 		return;
 	default:
 		mLOG(GBA_BIOS, STUB, "Stub software interrupt: %02X", immediate);

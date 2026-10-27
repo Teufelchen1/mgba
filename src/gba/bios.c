@@ -14,6 +14,9 @@
 
 mLOG_DEFINE_CATEGORY(GBA_BIOS, "GBA BIOS", "gba.bios");
 
+#define REG(X) (1 << X)
+#define PUSH(REGS) cpu->gprs[ARM_SP] = GBAStoreMultiple(cpu, cpu->gprs[ARM_SP], REGS, LSM_DB, NULL)
+
 static void _unLz77(struct GBA* gba, int width);
 static void _unHuffman(struct GBA* gba);
 static void _unRl(struct GBA* gba, int width);
@@ -591,13 +594,12 @@ void GBASwi16(struct ARMCore* cpu, int immediate) {
 		ARMRaiseSWI(cpu);
 
 		/* Save the regs that the BIOS uses */
-		ARMRunFake(cpu, 0xE92D5800); /* push {r11, r12, lr} */
-		ARMRun(cpu);
+		/* push {r11, r12, lr} */
+		PUSH(REG(11) | REG(12) | REG(ARM_LR));
 
 		/* Save the SPSR to stack */
 		cpu->gprs[11] = cpu->spsr.packed;
-		ARMRunFake(cpu, 0xE92D0800); /* push {r11} */
-		ARMRun(cpu);
+		PUSH(REG(11));
 
 		/* Switch from SVC to SYSTEM mode, keeping the IRQ dis/enabled as befor */
 		cpu->gprs[11] &= 0x80; /* keep IRQ flag */
@@ -606,8 +608,7 @@ void GBASwi16(struct ARMCore* cpu, int immediate) {
 		ARMSetPrivilegeMode(cpu, MODE_SYSTEM);
 
 		/* Save SYSTEM mode `lr` to stack (and r2 for some reason) */
-		ARMRunFake(cpu, 0xE92D4004); /* push {r2, lr} */
-		ARMRun(cpu);
+		PUSH(REG(2) | REG(ARM_LR));
 
 		/* Set LR to hle-bios.s:54 / swi_complete */
 		cpu->gprs[ARM_LR] = 0xA4;
@@ -615,9 +616,8 @@ void GBASwi16(struct ARMCore* cpu, int immediate) {
 		/* The address in EWRAM this will jump to */
 		cpu->gprs[12] = 0x02002040;
 
-		/* Jump to it, using bx as the BIOS, but will always be ARM */
-		ARMRunFake(cpu, 0x112FFF1C); /* bx r12 */
-		ARMRun(cpu);
+		/* Jump to it */
+		cpu->gprs[ARM_PC] = 0x02002040;
 		return;
 	default:
 		mLOG(GBA_BIOS, STUB, "Stub software interrupt: %02X", immediate);

@@ -17,6 +17,7 @@
 
 #ifdef M_CORE_GBA
 #include <mgba/gba/core.h>
+#include <mgba/internal/gba/sio/unix.h>
 #endif
 
 #include <mgba/core/core.h>
@@ -129,6 +130,9 @@ CoreController* CoreManager::loadGame(VFile* vf, const QString& path, const QStr
 
 	core->init(core);
 	mCoreInitConfig(core, nullptr);
+
+	GBASIOUnixCreate(&m_unixsocket);
+	core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &m_unixsocket.siodriver);
 
 	if (m_config) {
 		mCoreLoadForeignConfig(core, m_config);

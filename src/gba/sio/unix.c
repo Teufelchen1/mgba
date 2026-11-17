@@ -98,7 +98,7 @@ void GBASIOUnixCreate(struct GBASIOUnix* unix) {
 	unix->receive_fifo_offset = 0;
 	unix->send_fifo_offset = 0;
 
-	puts("UnixCreate");
+	puts("GBASIOUnixCreate");
 }
 
 static const char* _modeName(enum GBASIOMode mode) {
@@ -120,30 +120,41 @@ static const char* _modeName(enum GBASIOMode mode) {
 	}
 }
 
+// Todo: If we can't init the driver, should we abort starting mGBA?
 static bool GBASIOUnixInit(struct GBASIODriver* driver) {
-	puts("UnixInit");
-	signal(SIGPIPE, SIG_IGN); // Stupid
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
-
 	struct sockaddr_un my_addr;
+
+	memset(&my_addr, 0, sizeof(my_addr));
+	my_addr.sun_family = AF_UNIX;
+	strncpy((char *) my_addr.sun_path, "gba_uart", sizeof(my_addr.sun_path) - 1);
+
+	puts("GBASIOUnixInit");
+	signal(SIGPIPE, SIG_IGN); // Stupid
+
 	unix->socket = socket(AF_UNIX, SOCK_STREAM, 0);
 
-	if (fcntl(unix->socket, F_SETFL, fcntl(unix->socket, F_GETFL, 0) | O_NONBLOCK) == -1){
+	if (unix->socket == -1) {
+		printf("GBASIOUnixInit: Could not create socket: %s\n", strerror(errno));
 		return false;
 	}
 
-	if (unix->socket == -1)
+	if (fcntl(unix->socket, F_SETFL, fcntl(unix->socket, F_GETFL, 0) | O_NONBLOCK) == -1){
+		printf("GBASIOUnixInit: Failed to set socket as non blocking: %s\n", strerror(errno));
 		return false;
+	}
 
-	memset(&my_addr, 0, sizeof(my_addr));
-
-	my_addr.sun_family = AF_UNIX;
-
-	strncpy((char *) my_addr.sun_path, "gba_uart", sizeof(my_addr.sun_path) - 1);
-	if (bind(unix->socket, (struct sockaddr *) &my_addr, sizeof(my_addr)) == -1)
+	if (bind(unix->socket, (struct sockaddr *) &my_addr, sizeof(my_addr)) == -1) {
+		// Todo: This might happen often if the socket got stuck and mGBA didn't terminate gracefully
+		// Might just forcefully delete the existing file but that is high risk...
+		printf("GBASIOUnixInit: Failed to bind socket: %s\n", strerror(errno));
 		return false;
-	if (listen(unix->socket, 1) == -1)
+	}
+
+	if (listen(unix->socket, 1) == -1) {
+		printf("GBASIOUnixInit: Failed to listen on socket: %s\n", strerror(errno));
 		return false;
+	}
 
 	GBASIOUnixReset(driver);
 	return true;
@@ -159,6 +170,7 @@ static void GBASIOUnixDeinit(struct GBASIODriver* driver) {
 	unlink("gba_uart");
 }
 
+// Todo: Reset internal values, fifos etc
 static void GBASIOUnixReset(struct GBASIODriver* driver) {
 	puts("UnixReset");
 	struct GBASIOUnix* unix = (struct GBASIOUnix*) driver;
@@ -286,15 +298,17 @@ static ssize_t _receive_byte(struct GBASIOUnix* unix, uint32_t cyclesLate) {
 		return 1;
 	}
 
-	if (unix->uart.fifo_enable && unix->receive_fifo_offset == 4) {
-		// keep data in socket buffer if fifo is full
-		return 1;
-	}
+	// if (unix->uart.fifo_enable && unix->receive_fifo_offset == 4) {
+	// 	// keep data in socket buffer if fifo is full
+	// 	puts("_receive_byte: Fifo is completely full");
+	// 	return 1;
+	// }
 
-	if (!unix->uart.fifo_enable && unix->receive_fifo_offset > 0) {
-		// keep data in socket buffer if fifo is full
-		return 1;
-	}
+	// if (!unix->uart.fifo_enable && unix->receive_fifo_offset > 0) {
+	// 	// keep data in socket buffer if fifo is full
+	// 	puts("_receive_byte: Fifo is not empty");
+	// 	return 1;
+	// }
 
 	uint8_t data = 0;
 	ssize_t ret = read(unix->peer_socket, &data, sizeof(data));
@@ -313,7 +327,7 @@ static ssize_t _receive_byte(struct GBASIOUnix* unix, uint32_t cyclesLate) {
 			_fifo_push(&unix->receive_fifo, &unix->receive_fifo_offset, data);
 		} else {
 			/* ToDo: What does hardware do when the last byte wasn't read by the application yet?
-		 	 * Overwrite the last byte? Drop the new byte? */
+			 * Overwrite the last byte? Drop the new byte? (new insight: Yes it does!) */
 			puts("GBASIOUnixProcessEvents: Receive Fifo full, dropped  byte!");
 		}
 	} else {
@@ -348,7 +362,7 @@ static ssize_t _send_byte(struct GBASIOUnix* unix) {
 
 	/* Don't send data if sending is disabled */
 	if (!unix->uart.send_enable) {
-		puts("GBASIOUnixProcessEvents: Got data but sending is disabled");
+		puts("GBASIOUnixProcessEvents: Got data to send but sending is disabled");
 		return 1;
 	}
 
@@ -384,12 +398,14 @@ static void GBASIOUnixProcessEvents(struct mTiming* timing, void* context, uint3
 	}
 
 	if (_send_byte(unix) != 1) {
+		puts("GBASIOUnixProcessEvents: _send_byte() failed!");
 		GBASIOUnixReset((struct GBASIODriver *) context);
 		return;
 	}
 
 	ssize_t ret = _receive_byte(unix, cyclesLate);
 	if ((ret == 0) || ((ret == -1) && (errno != EAGAIN && errno != EWOULDBLOCK))) {
+		puts("GBASIOUnixProcessEvents: _receive_byte() failed!");
 		GBASIOUnixReset((struct GBASIODriver *) context);
 		return;
 	}
